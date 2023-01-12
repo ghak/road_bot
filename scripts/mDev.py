@@ -18,6 +18,7 @@
 import smbus
 import time
 import threading
+import traceback
 from threading import Lock
 
 def numMap(value,fromLow,fromHigh,toLow,toHigh):
@@ -61,14 +62,16 @@ class mDEV:
 	
 	def writeReg(self,cmd,value):
 		try:
+			value = int(value)
 			self.bus.write_i2c_block_data(self.address,cmd,[value>>8,value&0xff])
 			time.sleep(0.001)
 			self.bus.write_i2c_block_data(self.address,cmd,[value>>8,value&0xff])
 			time.sleep(0.001)
 			self.bus.write_i2c_block_data(self.address,cmd,[value>>8,value&0xff])
 			time.sleep(0.001)
-		except Exception,e:
-			print Exception,"I2C Error :",e
+		except Exception as e:
+			print (Exception,"I2C Error :",e)
+			traceback.print_exc()
 		
 	def readReg(self,cmd):		
 		##################################################################################################
@@ -133,18 +136,18 @@ def loop():
 	while True:
 		SonicEchoTime = mdev.readReg(mdev.CMD_SONIC)
 		distance = SonicEchoTime * 17.0 / 1000.0
-		print "EchoTime: %d, Sonic: %.2f cm"%(SonicEchoTime,distance)
+		print("EchoTime: %d, Sonic: %.2f cm"%(SonicEchoTime,distance))
 		time.sleep(0.001)
 	
 if __name__ == '__main__':
 	import sys
-	print "mDev.py is starting ... "
+	print("mDev.py is starting ... ")
 	#setup()
 	try:
 		if len(sys.argv)<2:
-			print "Parameter error: Please assign the device"
+			print("Parameter error: Please assign the device")
 			exit() 
-		print sys.argv[0],sys.argv[1]
+		print (sys.argv[0],sys.argv[1])
 		if sys.argv[1] == "servo":		
 			cnt = 3	
 			while (cnt != 0):		
@@ -179,7 +182,7 @@ if __name__ == '__main__':
 			mdev.writeReg(mdev.CMD_IO3,1)
 		if sys.argv[1] == "ultrasonic" or sys.argv[1] == "s":
 			while True:
-				print "Sonic: ",mdev.getSonic()
+				print("Sonic: ",mdev.getSonic())
 				time.sleep(0.1)
 		if sys.argv[1] == "motor":
 				mdev.writeReg(mdev.CMD_DIR1,0)

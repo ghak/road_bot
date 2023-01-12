@@ -19,6 +19,8 @@ from socket import *
 import threading
 from Command import COMMAND as cmd
 from mDev import *
+import traceback
+
 mdev = mDEV()
 class mTCPServer(threading.Thread):
     HOST = ''
@@ -33,62 +35,67 @@ class mTCPServer(threading.Thread):
         pass
         
     def run(self):
-		self.startTCPServer()
-		self.tcpLink()
-		
+        self.startTCPServer()
+        self.tcpLink()
+        
     def startTCPServer(self):
         self.sock = socket(AF_INET, SOCK_STREAM)
         try:
-			self.sock.bind(self.ADDR)
-        except Exception,e:
-			print "Bind Error : ",e
-			self.tcpClientSock, self.addr = self.sock.accept()
-			self.sock.bind(self.ADDR)
+            self.sock.bind(self.ADDR)
+        except Exception as e:
+            print("Bind Error : ",e)
+            traceback.print_exc()
+            self.tcpClientSock, self.addr = self.sock.accept()
+            self.sock.bind(self.ADDR)
         self.sock.listen(1)        
         #self.t = threading.Thread(target = self.tcpLink)
         #self.t.setName("TCP Server Thread...")
         #self.t.start()
         
         #self.t.setDaemon(True)
-        print "TCP Server Thread Starting ... "
+        print("TCP Server Thread Starting ... ")
 
     def tcpLink(self):
         while True:
-            print "Wating for connect ... "
+            print("Wating for connect ... ")
             try:
-			    self.tcpClientSock, self.addr = self.sock.accept()
-			    print "Connect from ", self.addr
-            except Exception ,  e:
-				print "sock closed! Error: ",e
-				try:
-					self.tcpClientSock.close()
-				except Exception ,  e:
-					print "Client close Error",e
-				self.sock.shutdown(2)
-				self.sock.close()             
-				break			
+                self.tcpClientSock, self.addr = self.sock.accept()
+                print("Connect from ", self.addr)
+            except Exception as e:
+                print("sock closed! Error: ",e)
+                traceback.print_exc()
+                try:
+                    self.tcpClientSock.close()
+                except Exception as e:
+                    print("Client close Error",e)
+                    traceback.print_exc()
+                self.sock.shutdown(2)
+                self.sock.close()             
+                break           
             
             while True:
                 try:
                     RecvData_ALL = self.tcpClientSock.recv(self.BUFSIZ)
-                except Exception ,  e:
-                    print e
+                except Exception as e:
+                    print(e)
+                    traceback.print_exc()
                     self.tcpClientSock.close()
                     break
                 if not RecvData_ALL:
                     break
                 #print RecvData_ALL
                 RecvData_Array = RecvData_ALL.split(">")
-                print RecvData_Array
+                print(RecvData_Array)
                 for RecvData in RecvData_Array:                    
                     if RecvData == "":
                         continue
-                    print "RecvData  : ", RecvData
+                    print("RecvData  : ", RecvData)
                     if cmd.CMD_FORWARD[1:]  in RecvData:
                         try:
                             value = int(filter(str.isdigit, RecvData))
-                        except Exception,e:
-                            print e
+                        except Exception as e:
+                            print(e)
+                            traceback.print_exc()
                             continue
                         mdev.writeReg(mdev.CMD_DIR1,1)
                         mdev.writeReg(mdev.CMD_DIR2,1)
@@ -139,31 +146,32 @@ class mTCPServer(threading.Thread):
                         pass
                     elif cmd.CMD_SPEED_SLIDER[1:]  in RecvData:
                         value = int(filter(str.isdigit, RecvData))
-                        print value
+                        print(value)
                         pass
                     elif cmd.CMD_DIR_SLIDER[1:]   in RecvData :
                         value = int(filter(str.isdigit, RecvData))
-                        print value
+                        print(value)
                         pass
                     elif cmd.CMD_CAMERA_SLIDER[1:]   in RecvData :
                         value = int(filter(str.isdigit, RecvData))
-                        print value  
+                        print(value)  
                     elif cmd.CMD_BUZZER_ALARM[1:]  in RecvData:
-						try:
-							value = int(filter(str.isdigit, RecvData))
-							if value != 0:
-								mdev.writeReg(mdev.CMD_BUZZER,2000)
-							elif value == 0:               		
-								mdev.writeReg(mdev.CMD_BUZZER,0)
-						except Exception ,  e:
-							print "Command without parameters"
-							if mdev.Is_Buzzer_State_True is True:
-								mdev.Is_Buzzer_State_True = False
-								mdev.writeReg(mdev.CMD_BUZZER,0)
-							elif mdev.Is_Buzzer_State_True is False:                		
-								mdev.Is_Buzzer_State_True = True
-								mdev.writeReg(mdev.CMD_BUZZER,2000)
-						
+                        try:
+                            value = int(filter(str.isdigit, RecvData))
+                            if value != 0:
+                                mdev.writeReg(mdev.CMD_BUZZER,2000)
+                            elif value == 0:                    
+                                mdev.writeReg(mdev.CMD_BUZZER,0)
+                        except Exception as e:
+                            print("Command without parameters")
+                            traceback.print_exc()
+                            if mdev.Is_Buzzer_State_True is True:
+                                mdev.Is_Buzzer_State_True = False
+                                mdev.writeReg(mdev.CMD_BUZZER,0)
+                            elif mdev.Is_Buzzer_State_True is False:                        
+                                mdev.Is_Buzzer_State_True = True
+                                mdev.writeReg(mdev.CMD_BUZZER,2000)
+                        
                     elif cmd.CMD_RGB_B[1:]  in RecvData:
                         if mdev.Is_IO3_State_True is True:
                             mdev.Is_IO3_State_True = False
@@ -185,16 +193,16 @@ class mTCPServer(threading.Thread):
                         elif mdev.Is_IO2_State_True is False:
                             mdev.Is_IO2_State_True = True
                             mdev.writeReg(mdev.CMD_IO2,1)    
-                    elif cmd.CMD_ULTRASONIC[1:]  in RecvData:						
-						sonic = mdev.getSonic()
-						self.sendData(str(sonic))
+                    elif cmd.CMD_ULTRASONIC[1:]  in RecvData:                       
+                        sonic = mdev.getSonic()
+                        self.sendData(str(sonic))
             #time.sleep(1)
     def stopTCPServer(self):
         pass
         try:
-			self.tcpClientSock.close()
-        except Exception ,  e:
-			print "Client close Error",e
+            self.tcpClientSock.close()
+        except Exception as e:
+            print("Client close Error",e)
         self.sock.shutdown(2)
         self.sock.close()
         

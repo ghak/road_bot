@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22.1)
+cmake_minimum_required(VERSION 3.16)
 project(road_bot)
 
 ## Compile as C++11, supported in ROS Kinetic and newer

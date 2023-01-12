@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Created on Sat Apr  4 01:13:12 2020
@@ -48,7 +48,7 @@ def callback(data):
         if time.time() - t_pred > 0.2:
             t_pred = time.time()
             dic_vals['vitesse'][1] = value
-            print value
+            print(value)
     elif data.buttons[5] == 1:
         value = dic_vals['vitesse'][0] - 100
         if(value<350):
@@ -56,7 +56,7 @@ def callback(data):
         if time.time() - t_pred > 0.2:
             t_pred = time.time()
             dic_vals['vitesse'][1] = value
-            print value        
+            print(value)
     
     dic_vals['rotation_direction'][1] = int((data.axes[0]+1) * 90/2) + 50
     dic_vals['rotation_cam_x'][1] = int((data.axes[3]+1) * 90/2) + 50
@@ -117,7 +117,7 @@ def callback(data):
         mdev.writeReg(mdev.CMD_SERVO3,numMap(dic_vals['rotation_cam_y'][1],0,180,500,2500))
         dic_vals['rotation_cam_y'][0]=dic_vals['rotation_cam_y'][1]
 
-                            
+      						
     if mdev.Is_IO3_State_True != dic_vals['light_red']:
         if mdev.Is_IO3_State_True is True:
             mdev.Is_IO3_State_True = False
@@ -143,7 +143,7 @@ def callback(data):
         if mdev.Is_Buzzer_State_True is True:
             mdev.Is_Buzzer_State_True = False
             mdev.writeReg(mdev.CMD_BUZZER,0)
-        elif mdev.Is_Buzzer_State_True is False:                        
+        elif mdev.Is_Buzzer_State_True is False:                		
             mdev.Is_Buzzer_State_True = True
             mdev.writeReg(mdev.CMD_BUZZER,2000)"""  
     
@@ -174,7 +174,7 @@ def callback(data):
         mdev.writeReg(mdev.CMD_SERVO2,numMap(value,0,180,500,2500))
         pass
 
-    elif data.buttons[3] == 1:                      
+    elif data.buttons[3] == 1:						
         sonic = mdev.getSonic()
         self.sendData(str(sonic))"""
     
