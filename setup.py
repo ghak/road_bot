@@ -23,6 +23,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'road_bot_bridge = road_bot.road_bot_bridge:main'
         ],
     },
 )
