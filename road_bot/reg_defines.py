@@ -3,6 +3,7 @@
 
 ip_addr = "192.168.0.25"
 ip_port = 12345
+camera_port = 5000
 
 
 def numMap(value,fromLow,fromHigh,toLow,toHigh):

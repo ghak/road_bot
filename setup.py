@@ -23,7 +23,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'road_bot_bridge = road_bot.road_bot_bridge:main'
+            'road_bot_bridge = road_bot.road_bot_bridge:main',
+            'camera_bridge = road_bot.camera_bridge:main',
         ],
     },
 )

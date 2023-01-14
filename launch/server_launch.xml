@@ -4,6 +4,7 @@
     <node name="joy" pkg="joy" exec="joy_node"/>
     
     <node name="image_view" pkg="image_view" exec="image_view" output="screen">
-        <remap from="image" to="/usb_cam/image_raw" />
+        <param name="autosize" value="true" />
+        <remap from="image" to="rpi_image_raw" />
     </node>
 </launch>
