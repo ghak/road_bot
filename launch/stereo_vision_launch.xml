@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<launch>
+    <node name="camera_bridge1" pkg="road_bot" exec="camera_bridge">
+        <remap from="rpi_camera_topic" to="camera1" />
+        <param name="ip_addr" value="192.168.0.25" />
+        <param name="camera_port" value="5000" />
+    </node>    
+    <node name="camera_bridge2" pkg="road_bot" exec="camera_bridge">
+        <remap from="rpi_camera_topic" to="camera2" />
+        <param name="ip_addr" value="192.168.0.25" />
+        <param name="camera_port" value="5001" />
+    </node>        
+    <!--node name="stereo_vision" pkg="road_bot" exec="stereo_vision">
+        <remap from="topic1" to="camera1" />
+        <remap from="topic2" to="camera2" />
+    </node-->
+</launch>

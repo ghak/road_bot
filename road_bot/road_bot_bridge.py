@@ -10,6 +10,7 @@ import socket
 import time
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
+from sensor_msgs.msg import LaserScan
 from road_bot.reg_defines import *
 
 
@@ -27,19 +28,56 @@ dic_vals = {
         'light_blue' : [False, False],
 }
 
+flag= '0'.encode('utf-8')
+
 class RoadBotBridge(Node):
 
-    def __init__(self, topic):
+    def __init__(self, topic, topic2):
         super().__init__('road_bot_bridge')
         self.subscription = self.create_subscription(Joy, topic, self.callback, 10)
+        self.publisher_ = self.create_publisher(LaserScan, topic2, 10)
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.remote_addr = (ip_addr, ip_port)
         self.t_pred = time.time()
+        timer_period = 0.5  # seconds
+        self.timer = self.create_timer(timer_period, self.timer_callback)
         self.subscription  # prevent unused variable warning
     
     def send_udp(self, l):
         msg = ';'.join([str(x) for x in l])
         self.udp.sendto(msg.encode('utf-8'), self.remote_addr)
+    
+    def timer_callback(self):
+        current_time = time.time()
+        scan = LaserScan()
+        scan.header.frame_id = 'sonar_frame'
+        scan.angle_min = 0.611
+        scan.angle_max = 2.55
+        scan.angle_increment = 0.175
+        scan.time_increment = 0.05
+        scan.scan_time = 0.3
+        scan.range_min = 0.0
+        scan.range_max = 10000.0
+
+        scan.ranges = []
+        scan.intensities = []
+        
+        
+        #print "scan Sonic...."
+        for angle in range(35, 146, 10):
+            self.send_udp((0, REG_SERVO4, numMap(angle,0,180,500,2500)))
+            self.send_udp((0, REG_SERVO4, numMap(angle,0,180,500,2500)))
+            data = flag
+            while data==flag:
+                self.send_udp((1,REG_ECHO))
+                data, _ = self.udp.recvfrom(1024)
+            distance = (float(data.decode('utf-8')) * 17.0 / 1000.0)
+            scan.ranges.append(distance)
+            time.sleep(0.05)
+        self.publisher_.publish(scan)
+        
+            
+            
     
     def callback(self, data):
         if data.buttons[0] == 1: #forward
@@ -73,15 +111,15 @@ class RoadBotBridge(Node):
         
         
         if data.axes[6]== 1:
-            if time.time() - self.t_pred > 0.2:
+            if time.time() - self.t_pred > 0.5:
                 self.t_pred = time.time()
                 dic_vals['light_red'][1] = not(dic_vals['light_red'][0])  
         elif data.axes[6]== -1:
-            if time.time() - self.t_pred > 0.2:
+            if time.time() - self.t_pred > 0.5:
                 self.t_pred = time.time()
                 dic_vals['light_green'][1] = not(dic_vals['light_green'][0])  
         elif data.axes[7]== 1:
-            if time.time() - self.t_pred > 0.2:
+            if time.time() - self.t_pred > 0.5:
                 self.t_pred = time.time()
                 dic_vals['light_blue'][1] = not(dic_vals['light_blue'][0])
         """elif  data.axes[7]== -1:
@@ -191,7 +229,7 @@ class RoadBotBridge(Node):
 def main(args=None):
     rclpy.init(args=args)
 
-    road_bot_bridge = RoadBotBridge("joy")
+    road_bot_bridge = RoadBotBridge("joy", "Sonar")
 
     rclpy.spin(road_bot_bridge)
 

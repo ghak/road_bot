@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'road_bot_bridge = road_bot.road_bot_bridge:main',
             'camera_bridge = road_bot.camera_bridge:main',
+            'stereo_vision = road_bot.stereo_vision:main',
         ],
     },
 )
