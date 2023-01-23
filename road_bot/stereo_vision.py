@@ -6,13 +6,53 @@ Created on Sat Jan  14 10:24:00 2022
 """
 
 import cv2
+import glob
+import sys
+import os
 import numpy as np
+
 import rclpy
 from rclpy.node import Node
+
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 
-from road_bot.reg_defines import *
+
+
+def save_xml_file(path, list_def, list_val):
+    cv_file = cv2.FileStorage(path, cv2.FILE_STORAGE_WRITE)
+    for i in range(len(list_val)):
+        cv_file.write(list_def[i], list_val[i])
+    cv_file.release()
+
+def drawLines(img, lines, colors):
+    _, c, _ = img.shape
+    for r, color in zip(lines, colors):
+        x0, y0 = map(int, [0, -r[2]/r[1]])
+        x1, y1 = map(int, [c, -(r[2]+r[0]*c)/r[1]])
+        cv2.line(img, (x0, y0), (x1, y1), color, 2)
+
+def detect_chess_board(frame, size_CB, option):
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    h1,w1,_ = frame.shape
+    resized = cv2.resize(frame, (w1*2,h1*2))
+    gray_resized = cv2.cvtColor(resized,cv2.COLOR_BGR2GRAY)
+    ret, corners = cv2.findChessboardCorners(resized, size_CB, None)
+    if ret:
+        cv2.cornerSubPix(gray_resized,corners,(11,11),(-1,-1),criteria)
+        corners = corners/2
+        if option == 4:
+            return corners[[0, size_CB[0]-1, (size_CB[1]-1)*size_CB[0], size_CB[0]*size_CB[1]-1] , 0]
+        else :
+            return corners[:,:]
+    
+    return []
+
+
+def custom_resize(frame, w2):
+    h, w = frame.shape[0:2]
+    ratio = h/w
+    return cv2.resize(frame, (w2, int(w2*ratio)))
 
 
 class StereoVisionNode(Node):
@@ -22,120 +62,455 @@ class StereoVisionNode(Node):
         
         self.subscription1 = self.create_subscription(Image, 'camera1', self.callback_camera1, 10)
         self.subscription2 = self.create_subscription(Image, 'camera2', self.callback_camera2, 10)
+        self.disparity_publisher_ = self.create_publisher(Image, 'Disparity', 10)
         self.cvbr = CvBridge()
         
-        self.calibrate = False
+        
         self.frame1 = ""
         self.frame2 = ""
         self.init1 = False
         self.init2 = False
+        self.calibrate = False
+        self.force_overwrite = False
+        
+        version = 'to_use'
+        self.checkerboard = (7,10)
+        self.checkerboard_box_size = 2.5
+        self.calib_path = "./calibration_images/"+str(self.checkerboard[0])+"x"+str(self.checkerboard[1])+"/"+version+"/"
+                
+        
+        self.disparity = 0
+        
+        self.frame_id = 0
+        self.Left_Stereo_Map = []
+        self.Right_Stereo_Map = []
+        self.cameraL_calibration = {}
+        self.cameraR_calibration = {}
+        self.stereo_calibration = {}
+        self.rectification_vals = {}
+        self.h_mats = []
+        self.stereoSGBM = 0
+        
+        self.landmark_frames1 = np.zeros((480, 640,3), np.uint8)
+        self.landmark_frames2 = np.zeros((480, 640,3), np.uint8)
+        
+        self.calibrate_stereo()
         timer_period = 0.05  # seconds
         self.timer = self.create_timer(timer_period, self.timer_callback)
-        
-        self.checkerboard = (4,6)
-        self.criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-        
-        self.flags = 0
-        self.flags |= cv2.CALIB_FIX_INTRINSIC
- 
-        self.criteria_stereo= (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
- 
-        self.objp = np.zeros((1, self.checkerboard[0] * self.checkerboard[1], 3), np.float32)
-        self.objp[0,:,:2] = np.mgrid[0:self.checkerboard[0], 0:self.checkerboard[1]].T.reshape(-1, 2)
-        self.objp=self.objp*4.0
-        
-        self.imgpts1 = []
-        self.imgpts2 = []
-        self.objpts = []
-        
-        self.Left_Stereo_Map = 0
-        self.Left_Stereo_Map = 0
 
-  
 
+    def calibrate_stereo(self):
+        
+        
+        if not self.force_overwrite:
+            if (os.path.exists(self.calib_path+'stereo_calibration.xml') 
+                and os.path.exists(self.calib_path+'rectification_values.xml') 
+                and os.path.exists(self.calib_path+'improved_params2.xml')
+                and os.path.exists(self.calib_path+'homography_matrices.xml')):
+                self.load_cameras_data(self.calib_path)
+                self.calibrate = True 
+                return
+               
+        
+        
+        pathL = self.calib_path + "cameraL/"
+        pathR = self.calib_path + "cameraR/"
+        if not( os.path.exists(pathL) and os.path.exists(pathR)):
+            self.get_logger().error(f'Folder \'{pathL}\' or \'{pathR}\' not found')
+            sys.exit(1)
+        fnamesL = sorted(glob.glob(pathL+'/*.png'))
+        fnamesR = sorted(glob.glob(pathR+'/*.png'))
+        if ( len(fnamesL)==0 or len(fnamesR)==0):
+            self.get_logger().error(f'No images in folder \'{pathL}\' or \'{pathR}\'found')
+            sys.exit(1)
+        
+        error = 0.01
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, error)
+        criteria_stereo= (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, error)
+        conv_size = (11, 11)
+        
+        objp = np.zeros((np.prod(self.checkerboard), 3), np.float32)
+        objp[:,:2] = np.indices(self.checkerboard).T.reshape(-1, 2)
+        objp=objp*self.checkerboard_box_size
+        
+        good_list_l = []
+        good_list_r = []
+        good_list_all = []
+        
+        img_ptsL_alone = []
+        img_ptsR_alone = []
+        img_ptsL_group = []
+        img_ptsR_group = []
+        obj_ptsL = []
+        obj_ptsR = []
+        obj_pts = []
+        
+        
+        
+        h1, w1 = (0,0)
+        h2, w2 = (0,0)
+                
+        list_image = range(len(fnamesL))
+        
+        print(self.calib_path)
+        print(list_image)
+        
+        for i in list_image:           
+            imgL = cv2.imread(fnamesL[i])
+            h1,w1,_ = imgL.shape
+            resizedL = cv2.resize(imgL, (w1*2,h1*2))
+            gray_resizedL = cv2.cvtColor(resizedL,cv2.COLOR_BGR2GRAY)
+            retL, cornersL = cv2.findChessboardCorners(resizedL, self.checkerboard, None)
+            if retL:
+                good_list_l.append(i)
+                cv2.cornerSubPix(gray_resizedL,cornersL,conv_size,(-1,-1),criteria)
+                cornersL = cornersL/2
+                obj_ptsL.append(objp)
+                img_ptsL_alone.append(cornersL)
+                
+                cv2.drawChessboardCorners(self.landmark_frames1, self.checkerboard, cornersL, retL)
+                
+            imgR = cv2.imread(fnamesR[i])
+            h2,w2,_ = imgR.shape
+            resizedR = cv2.resize(imgR, (w2*2,h2*2))
+            gray_resizedR = cv2.cvtColor(resizedR,cv2.COLOR_BGR2GRAY)
+            retR, cornersR =  cv2.findChessboardCorners(resizedR, self.checkerboard, None)
+            if retR :
+                good_list_r.append(i)
+                cv2.cornerSubPix(gray_resizedR,cornersR,conv_size,(-1,-1),criteria)
+                cornersR = cornersR/2
+                obj_ptsR.append(objp)
+                img_ptsR_alone.append(cornersR)
+                
+                cv2.drawChessboardCorners( self.landmark_frames2, self.checkerboard, cornersR, retR)
+                
+            
+            cv2.imshow('Landmarks',np.vstack((self.landmark_frames1, self.landmark_frames2)))
+            
+            if retR and retL:
+                good_list_all.append(i)
+                obj_pts.append(objp)
+                img_ptsL_group.append(cornersL)
+                img_ptsR_group.append(cornersR)
+               
+            cv2.waitKey(10)
+        
+        print("only left :"+ str(list(set(good_list_l) - set(good_list_r))))
+        print("only right :"+ str(set(good_list_r) - set(good_list_l)))
+        print("anywhere :"+ str(set(list_image) - set(set(good_list_r+good_list_l))))
+        
+        print("*************************Intrinsic Calibration************************")
+        retL, mtxL, distL, rvecsL, tvecsL = cv2.calibrateCamera(obj_ptsL, img_ptsL_alone, (w1,h1), None, None)
+        print("Camera1 Error = "+str(retL))
+        #mtxL, roiL= cv2.getOptimalNewCameraMatrix(mtxL,distL,(w1,h1),0,(w1,h1))
+        
+        # Calibrating right camera
+        retR, mtxR, distR, rvecsR, tvecsR = cv2.calibrateCamera(obj_ptsR,img_ptsR_alone,(w2,h2),None,None)
+        print("Camera2 Error = "+str(retR))
+        #mtxR, roiR= cv2.getOptimalNewCameraMatrix(mtxR,distR,(w2,h2),0,(w2,h2))
+        
+        
+        print("*************************Extrinsic Calibration************************")        
+        flags = 0
+        flags |= cv2.CALIB_FIX_INTRINSIC
+# =============================================================================
+#         flags = (cv2.CALIB_FIX_INTRINSIC
+#                  + cv2.CALIB_FIX_ASPECT_RATIO 
+#                  + cv2.CALIB_ZERO_TANGENT_DIST
+#                  + cv2.CALIB_RATIONAL_MODEL 
+#                  + cv2.CALIB_FIX_K3 + cv2.CALIB_FIX_K4 + cv2.CALIB_FIX_K5)
+# =============================================================================
+        # This step is performed to transformation between the two cameras and calculate Essential and Fundamenatl matrix
+        retS, mtxL, distL, mtxR, distR, Rot, Trns, Emat, Fmat = cv2.stereoCalibrate(obj_pts, 
+                                                                                    img_ptsL_group, 
+                                                                                    img_ptsR_group, 
+                                                                                    mtxL, 
+                                                                                    distL, 
+                                                                                    mtxR, 
+                                                                                    distR, 
+                                                                                    (w1,h1), 
+                                                                                    criteria_stereo, flags)
+        save_xml_file(self.calib_path+"stereo_calibration.xml", ['retL', 'retR', 'retS', 'mtxL', 'distL', 'mtxR', 'distR', 'Rot', 'Trns', 'Emat', 'Fmat' ], 
+                                                        [retL, retR, retS, mtxL, distL, mtxR, distR, Rot, Trns, Emat, Fmat ])
+        print("Stereo Error = "+str(retS))
+        
+        self.cameraL_calibration['intrinsic_matrix']  = mtxL
+        self.cameraL_calibration['distortion_coef'] = distL
+        self.cameraR_calibration['intrinsic_matrix']  = mtxR
+        self.cameraR_calibration['distortion_coef'] = distR
+        
+        self.stereo_calibration["rotation_matrix"]    = Rot
+        self.stereo_calibration["translation_vector"] = Trns
+        self.stereo_calibration["essential_matrix"]   = Emat
+        self.stereo_calibration["fundamental_matrix"] = Fmat
+        
+        #pdb.set_trace()
+        print("*************************Homography matrixs calculation************************")
+        img_ptsL_group = np.asarray(img_ptsL_group).reshape((-1,2))
+        img_ptsR_group = np.asarray(img_ptsR_group).reshape((-1,2))
+        retH, H1, H2 = cv2.stereoRectifyUncalibrated(np.float32(img_ptsL_group), np.float32(img_ptsR_group), Fmat, (w1,h1))
+        save_xml_file(self.calib_path+"homography_matrices.xml", ['retH', 'camera1_homography_matrix', 'camera2_homography_matrix'], 
+                                                        [retH, H1, H2])
+        self.h_mats.append(H1)
+        self.h_mats.append(H2)
+        print("Homography error = "+str(retH))
+        
+        print("*************************Stereo Rectification calculation************************")
+        rect_l, rect_r, proj_mat_l, proj_mat_r, Q, roiL, roiR = cv2.stereoRectify(self.cameraL_calibration['intrinsic_matrix'], 
+                                                                                  self.cameraL_calibration['distortion_coef'],
+                                                                                  self.cameraR_calibration['intrinsic_matrix'], 
+                                                                                  self.cameraR_calibration['distortion_coef'],
+                                                                                  (w1, h1), 
+                                                                                  self.stereo_calibration["rotation_matrix"],
+                                                                                  self.stereo_calibration["translation_vector"],
+                                                                                  flags = cv2.CALIB_ZERO_DISPARITY,
+                                                                                  alpha = 1,
+                                                                                  newImageSize = (0,0))
+        
+        self.rectification_vals ["rect_l"]      = rect_l
+        self.rectification_vals ["rect_r"]      = rect_r
+        self.rectification_vals ["proj_mat_l"]  = proj_mat_l
+        self.rectification_vals ["proj_mat_r"]  = proj_mat_r
+        self.rectification_vals ["disparity"]   = Q
+        self.rectification_vals ["roiL"]        = roiL
+        self.rectification_vals ["roiR"]        = roiR
+        save_xml_file(self.calib_path+"rectification_values.xml", ['rect_l', 'rect_r', 'proj_mat_l', 'proj_mat_r', 'disparity', 'roiL', 'roiR'], 
+                                                        [rect_l, rect_r, proj_mat_l, proj_mat_r, Q, roiL, roiR])
+        
+        #self.rectification_vals ["proj_mat_l"][1,2] = 0
+        #self.rectification_vals ["proj_mat_r"][1,2] = 0
+        
+        self.Left_Stereo_Map = cv2.initUndistortRectifyMap(self.cameraL_calibration['intrinsic_matrix'], 
+                                                           self.cameraL_calibration['distortion_coef'], 
+                                                           self.rectification_vals ["rect_l"], 
+                                                           self.rectification_vals ["proj_mat_l"], 
+                                                           (w1*2, h1*2), cv2.CV_16SC2)
+        self.Right_Stereo_Map= cv2.initUndistortRectifyMap(self.cameraR_calibration['intrinsic_matrix'], 
+                                                           self.cameraR_calibration['distortion_coef'], 
+                                                           self.rectification_vals ["rect_r"], 
+                                                           self.rectification_vals ["proj_mat_r"],
+                                                           (w1*2, h1*2), cv2.CV_16SC2)
+        
+        
+        save_xml_file(self.calib_path+"improved_params2.xml", ['Left_Stereo_Map_x', 'Left_Stereo_Map_y', 'Right_Stereo_Map_x', 'Right_Stereo_Map_y'], 
+                                                        [self.Left_Stereo_Map[0], self.Left_Stereo_Map[1], self.Right_Stereo_Map[0], self.Right_Stereo_Map[1]])
+        
+        self.calibrate = True 
+    
+    
+    def load_cameras_data(self, path):
+        print("*************************Loading cameras calibration consts************************")
+        
+        print("*** stereo_calibration.xml")
+        cv_file = cv2.FileStorage(path+"stereo_calibration.xml", cv2.FILE_STORAGE_READ)
+        retL = cv_file.getNode('retL').real()
+        self.cameraL_calibration['intrinsic_matrix']  = cv_file.getNode('mtxL').mat()
+        self.cameraL_calibration['distortion_coef']   = cv_file.getNode('distL').mat()
+        print("Left error = "+str(retL))
+        retR = cv_file.getNode('retR').real()
+        self.cameraR_calibration['intrinsic_matrix']  = cv_file.getNode('mtxR').mat()
+        self.cameraR_calibration['distortion_coef']   = cv_file.getNode('distR').mat()
+        print("Right error = "+str(retR))
+        
+        retS = cv_file.getNode('retS').real()
+        self.stereo_calibration["rotation_matrix"]    = cv_file.getNode('Rot').mat()
+        self.stereo_calibration["translation_vector"] = cv_file.getNode('Trns').mat()
+        self.stereo_calibration["essential_matrix"]   = cv_file.getNode('Emat').mat()
+        self.stereo_calibration["fundamental_matrix"] = cv_file.getNode('Fmat').mat()
+        print("Stereo error = "+str(retS))
+        cv_file.release()
+        
+        print("*** Homography matrixs")
+        cv_file = cv2.FileStorage(path+"homography_matrices.xml", cv2.FILE_STORAGE_READ)
+        retH = cv_file.getNode('retH').mat()
+        self.h_mats.append(cv_file.getNode('camera1_homography_matrix').mat())
+        self.h_mats.append(cv_file.getNode('camera2_homography_matrix').mat())
+        print("Stereo error = "+str(retH))
+        cv_file.release()
+        
+        print("*** rectification_values.xml")
+        cv_file = cv2.FileStorage(path+"rectification_values.xml", cv2.FILE_STORAGE_READ)
+        self.rectification_vals ["rect_l"]      = cv_file.getNode('rect_l').mat()
+        self.rectification_vals ["rect_r"]      = cv_file.getNode('rect_r').mat()
+        self.rectification_vals ["proj_mat_l"]  = cv_file.getNode('proj_mat_l').mat()
+        self.rectification_vals ["proj_mat_r"]  = cv_file.getNode('proj_mat_r').mat()
+        self.rectification_vals ["disparity"]   = cv_file.getNode('disparity').mat()
+        self.rectification_vals ["roiL"]        = cv_file.getNode('roiL').mat()
+        self.rectification_vals ["roiR"]        = cv_file.getNode('roiR').mat()
+        cv_file.release()
+        
+        print("*** improved_params2.xml")
+        cv_file = cv2.FileStorage(path+"improved_params2.xml", cv2.FILE_STORAGE_READ)
+        self.Left_Stereo_Map.append(cv_file.getNode('Left_Stereo_Map_x').mat())
+        self.Left_Stereo_Map.append(cv_file.getNode('Left_Stereo_Map_y').mat())
+        self.Right_Stereo_Map.append(cv_file.getNode('Right_Stereo_Map_x').mat())
+        self.Right_Stereo_Map.append(cv_file.getNode('Right_Stereo_Map_y').mat())
+        cv_file.release()
+    
+    
     def timer_callback(self):
         if self.init1 and self.init2:
+            
             frame1 = self.frame1.copy()
             frame2 = self.frame2.copy()
             
-            h1,w1,_ = frame1.shape
-            h2,w2,_ = frame2.shape
-            if h1>h2 :
-                frame2= cv2.resize(frame2, (w1,h1), interpolation = cv2.INTER_AREA)
-            elif h2>h1 :
-                frame1= cv2.resize(frame1, (w2,h2), interpolation = cv2.INTER_AREA)
+            self.init1=False
+            self.init2=False
             
-            self.init1=False
-            self.init1=False
-            if not self.calibrate:
-                gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
-                gray2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
-                ret1, corners1 = cv2.findChessboardCorners(gray1, self.checkerboard, cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_FAST_CHECK + cv2.CALIB_CB_NORMALIZE_IMAGE)
-                ret2, corners2 = cv2.findChessboardCorners(gray2, self.checkerboard, cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_FAST_CHECK + cv2.CALIB_CB_NORMALIZE_IMAGE)
-                if ret1 and ret2:
-                        self.objpts.append(self.objp)
-                        cornersSubPix1 = cv2.cornerSubPix(gray1, corners1, (11,11),(-1,-1), self.criteria)
-                        cornersSubPix2 = cv2.cornerSubPix(gray2, corners2, (11,11),(-1,-1), self.criteria)
-                        
-                        frame1 = cv2.drawChessboardCorners(frame1, self.checkerboard, cornersSubPix1, ret1)
-                        frame2 = cv2.drawChessboardCorners(frame2, self.checkerboard, cornersSubPix2, ret2)
-                        
-                        self.imgpts1.append(cornersSubPix1)
-                        self.imgpts2.append(cornersSubPix2)
-                        
-                if len(self.objpts) == 25:
-                    self.calibrate = True
-                    
-                    ret1, mtx1, dist1, rvecs1, tvecs1 = cv2.calibrateCamera(self.objpts,self.imgpts1,gray1.shape[::-1],None,None)
-                    h1,w1= gray1.shape[:2]
-                    new_mtx1, roi1= cv2.getOptimalNewCameraMatrix(mtx1,dist1,(w1,h1),1,(w1,h1))
-                    
-                    ret2, mtx2, dist2, rvecs2, tvecs2 = cv2.calibrateCamera(self.objpts,self.imgpts2,gray2.shape[::-1],None,None)
-                    h2,w2= gray2.shape[:2]
-                    new_mtx2, roi2= cv2.getOptimalNewCameraMatrix(mtx2,dist2,(w2,h2),1,(w2,h2))
-                    
-                    retS, new_mtx1, dist1, new_mtx2, dist2, Rot, Trns, Emat, Fmat = cv2.stereoCalibrate(self.objpts, self.imgpts1, self.imgpts2, new_mtx1, dist1, new_mtx2, dist2, gray1.shape[::-1], self.criteria_stereo, self.flags)
-                    
-                    rectify_scale= 1
-                    rect_1, rect_2, proj_mat_1, proj_mat_2, Q, roi1, roi2= cv2.stereoRectify(new_mtx1, dist1, new_mtx2, dist2, gray1.shape[::-1], Rot, Trns, rectify_scale,(0,0))
-                    
-                    self.Left_Stereo_Map= cv2.initUndistortRectifyMap(new_mtx1, dist1, rect_1, proj_mat_1,
-                                             gray1.shape[::-1], cv2.CV_16SC2)
-                    
-                    self.Right_Stereo_Map= cv2.initUndistortRectifyMap(new_mtx2, dist2, rect_2, proj_mat_2,
-                                                                  gray2.shape[::-1], cv2.CV_16SC2)
-                     
-                    print("Saving paraeters ......")
-                    cv_file = cv2.FileStorage("improved_params2.xml", cv2.FILE_STORAGE_WRITE)
-                    cv_file.write("Left_Stereo_Map_x",self.Left_Stereo_Map[0])
-                    cv_file.write("Left_Stereo_Map_y",self.Left_Stereo_Map[1])
-                    cv_file.write("Right_Stereo_Map_x",self.Right_Stereo_Map[0])
-                    cv_file.write("Right_Stereo_Map_y",self.Right_Stereo_Map[1])
-                    cv_file.release()
-
-            if self.calibrate:
-                #cv2.imshow("Left image before rectification", frame1)
-                #cv2.imshow("Right image before rectification", frame2)
-                 
-                Left_nice= cv2.remap(frame1,self.Left_Stereo_Map[0],self.Left_Stereo_Map[1], cv2.INTER_LANCZOS4, cv2.BORDER_CONSTANT, 0)
-                Right_nice= cv2.remap(frame2,self.Right_Stereo_Map[0],self.Right_Stereo_Map[1], cv2.INTER_LANCZOS4, cv2.BORDER_CONSTANT, 0)
-                 
-                cv2.imshow("Left image after rectification", Left_nice)
-                cv2.imshow("Right image after rectification", Right_nice)
+            #cv2.imshow('Original', np.vstack((frame2, frame1)))
+            
+            #self.save_on_click(frame2, frame1)
+            self.stereo_vision_3rd(frame2, frame1)
+            
+    def save_on_click(self, frameL, frameR):   
+            checkerboard = (7,10)
+            
+            if cv2.waitKey(25) & 0xFF == ord('s'):
+            
+                h1,w1,_ = frameL.shape
+                h2,w2,_ = frameR.shape
                 
-                 
-                out = Right_nice.copy()
-                out[:,:,0] = Right_nice[:,:,0]
-                out[:,:,1] = Right_nice[:,:,1]
-                out[:,:,2] = Left_nice[:,:,2]
-                 
-                cv2.imshow("Output image", out)
+                
+                outputL = frameL.copy()
+                outputR = frameR.copy()
+                
+                resizedL = cv2.resize(frameL, (w1*2,h1*2))
+                resizedR = cv2.resize(frameR, (w2*2,h2*2))
+                
+                criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+                
+                gray_resizedL = cv2.cvtColor(resizedL,cv2.COLOR_BGR2GRAY)
+                gray_resizedR = cv2.cvtColor(resizedR,cv2.COLOR_BGR2GRAY)
+                
+                retL, cornersL = cv2.findChessboardCorners(resizedL, checkerboard, None)
+                retR, cornersR =  cv2.findChessboardCorners(resizedR, checkerboard, None)
+                
+                conv_size = (11, 11)
+                
+                if retL:
+                    cv2.cornerSubPix(gray_resizedL,cornersL,conv_size,(-1,-1),criteria)
+                    cornersL = cornersL/2 
+                    cv2.drawChessboardCorners(outputL,checkerboard,cornersL,retL)
+                    cv2.drawChessboardCorners(self.landmark_frames1,checkerboard,cornersL,retL)
+                
+                if retR :
+                    cv2.cornerSubPix(gray_resizedR,cornersR,conv_size,(-1,-1),criteria)
+                    cornersR = cornersR/2
+                    cv2.drawChessboardCorners(outputR,checkerboard,cornersR,retR)
+                    cv2.drawChessboardCorners(self.landmark_frames2,checkerboard,cornersR,retR)
+                    
+                cv2.imshow('LandmarkOnFrame',np.vstack((outputL, outputR)))
+                cv2.imshow('Landmarks',np.vstack((self.landmark_frames1, self.landmark_frames2)))
+                path_L = "cameraL/"
+                path_R = "cameraR/"
+                os.makedirs(path_L, exist_ok=True)
+                os.makedirs(path_R, exist_ok=True)
+                print("frame_"+f"{self.frame_id:03d}"+".png")
+                cv2.imwrite(path_L+"frame_"+f"{self.frame_id:03d}"+".png", frameL)
+                cv2.imwrite(path_R+"frame_"+f"{self.frame_id:03d}"+".png", frameR)
+                self.frame_id += 1
+    
+    def stereo_vision_3rd(self, frameL, frameR):
+        if self.calibrate:
+            h1, w1 = frameL.shape[0:2]
             
-            conc = cv2.hconcat([frame1, frame2])
-            cv2.imshow('frame', conc)
+            
+            #frameL, frameR = self.test_epilines_calibration(frameL, frameR, self.cameraL_calibration, self.cameraR_calibration, self.stereo_calibration, 1, (6,4))
+            
+            frameL, frameR = self.rectification_method1(frameL, frameR, 1)
+            
+            #cv2.imshow('Rectified', np.vstack((frameL, frameR)))
+            frameL = cv2.rotate(frameL, cv2.ROTATE_90_CLOCKWISE)
+            frameR = cv2.rotate(frameR, cv2.ROTATE_90_CLOCKWISE)
+            
+            self.disparity =  cv2.rotate(self.calculate_disparity(frameL, frameR), cv2.ROTATE_90_COUNTERCLOCKWISE)
+            self.disparity_publisher_.publish(self.cvbr.cv2_to_imgmsg(self.disparity, encoding="mono8"))
+            
+            #cv2.imshow('Disparity',self.disparity)
+            
+            
             cv2.waitKey(1)
+    
+    def calculate_disparity(self, frameL, frameR):
+        if not self.stereoSGBM :
+            self.stereoSGBM = cv2.StereoBM_create(96, 19)
+        imgL_gray = cv2.cvtColor(frameL,cv2.COLOR_BGR2GRAY)
+        imgR_gray = cv2.cvtColor(frameR,cv2.COLOR_BGR2GRAY)
+        disparity = self.stereoSGBM.compute(imgL_gray, imgR_gray)
         
+        disparity = disparity.astype(np.float32)
+        disparity = cv2.normalize(disparity, None, 0, 255, norm_type=cv2.NORM_MINMAX)
+        disparity = np.uint8(disparity)
+        return disparity
+    
+    
+    
+    def rectification_method1(self, frameL, frameR ,idx_resize):
+        if self.calibrate :
+            
+            frameL = cv2.remap(frameL, self.Left_Stereo_Map[0],self.Left_Stereo_Map[1], cv2.INTER_LANCZOS4, cv2.BORDER_CONSTANT,0)
+            frameR = cv2.remap(frameR, self.Right_Stereo_Map[0],self.Right_Stereo_Map[1], cv2.INTER_LANCZOS4, cv2.BORDER_CONSTANT,0)
+            if idx_resize == 1:
+                min_x1 = np.where(frameR > 0.0)[0].min()
+                max_x1 = np.where(frameR > 0.0)[0].max()
+    
+                min_y1 = np.where(frameR > 0.0)[1].min()
+                max_y1 = np.where(frameR > 0.0)[1].max()
+                
+                frameL = frameL[min_x1:max_x1, min_y1:max_y1]
+                frameR = frameR[min_x1:max_x1, min_y1:max_y1]
+            else:
+                min_x1 = np.where(frameL > 0.0)[0].min()
+                max_x1 = np.where(frameL > 0.0)[0].max()
+    
+                min_y1 = np.where(frameL > 0.0)[1].min()
+                max_y1 = np.where(frameL > 0.0)[1].max()
+                
+                frameL = frameL[min_x1:max_x1, min_y1:max_y1]
+                frameR = frameR[min_x1:max_x1, min_y1:max_y1]
+                
+            return frameL, frameR
+
+
+    def test_epilines_calibration(self, frame1, frame2, calibration1, calibration2, stereo_calibration, source_in_FM, cb):
         
+        if self.calibrate :
+            h, w = frame1.shape[:2]
+            #newcameramtx, _ = cv2.getOptimalNewCameraMatrix(calibration1['intrinsic_matrix'], calibration1['distortion_coef'], (w, h), 1, (w, h))
+            undistorded_frame1 = cv2.undistort(frame1, calibration1['intrinsic_matrix'], calibration1['distortion_coef'] , None, None)
+            
+            h, w = frame2.shape[:2]
+            #newcameramtx, _ = cv2.getOptimalNewCameraMatrix(calibration2['intrinsic_matrix'], calibration2['distortion_coef'], (w, h), 1, (w, h))
+            undistorded_frame2 = cv2.undistort(frame2, calibration2['intrinsic_matrix'], calibration2['distortion_coef'] , None, None)
+            
+            points1 = detect_chess_board(undistorded_frame1, cb, 4)
+            points2 = detect_chess_board(undistorded_frame2, cb, 4)
+            
+            colors = [(255,0,0),(0,255,0),(0,0,255),(255,255,0)]
+            
+            for i in range(len(points1)):
+                point = points1[i]
+                undistorded_frame1 = cv2.circle(undistorded_frame1, (int(point[0]), int(point[1])), radius=3, color=colors[i], thickness=2)
+                undistorded_frame1 = cv2.putText(undistorded_frame1, str(i), (int(point[0]), int(point[1])), cv2.FONT_HERSHEY_SIMPLEX, 1, colors[i], 2, cv2.LINE_AA, False) 
+            for i in range(len(points2)):
+                point = points2[i]
+                undistorded_frame2 = cv2.circle(undistorded_frame2, (int(point[0]), int(point[1])), radius=3, color=colors[i], thickness=2)
+                undistorded_frame2 = cv2.putText(undistorded_frame2, str(i), (int(point[0]), int(point[1])), cv2.FONT_HERSHEY_SIMPLEX, 1, colors[i], 2, cv2.LINE_AA, False) 
+                
+            if len(points1):
+                epilines_on_frame_2 = cv2.computeCorrespondEpilines(points1.reshape(-1, 1, 2), source_in_FM, stereo_calibration["fundamental_matrix"])
+                epilines_on_frame_2 = epilines_on_frame_2.reshape(-1, 3)
+                drawLines(undistorded_frame2, epilines_on_frame_2, colors)
+            
+            if len(points2):
+                epilines_on_frame_1 = cv2.computeCorrespondEpilines(points2.reshape(-1, 1, 2), (source_in_FM%2)+1, stereo_calibration["fundamental_matrix"])
+                epilines_on_frame_1 = epilines_on_frame_1.reshape(-1, 3)
+                drawLines(undistorded_frame1, epilines_on_frame_1, colors)
+            
+            return (undistorded_frame1, undistorded_frame2)
+            
+            
+    
     def callback_camera1(self, data):
         self.init1=True
         self.frame1 = self.cvbr.imgmsg_to_cv2(data)
@@ -143,7 +518,8 @@ class StereoVisionNode(Node):
     def callback_camera2(self, data):
         self.init2=True
         self.frame2 = self.cvbr.imgmsg_to_cv2(data)
-        
+           
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -155,7 +531,7 @@ def main(args=None):
     # Destroy the node explicitly
     # (optional - otherwise it will be done automatically
     # when the garbage collector destroys the node object)
-    rpi_camera_publisher.cap.release()
+    stereo_vision_node.cap.release()
     cv2.destroyAllWindows()
     stereo_vision_node.destroy_node()
     rclpy.shutdown()
