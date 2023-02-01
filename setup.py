@@ -12,7 +12,7 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name), glob.glob('launch/*launch.[pxy][yma]*'))
-        
+
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -26,6 +26,7 @@ setup(
             'road_bot_bridge = road_bot.road_bot_bridge:main',
             'camera_bridge = road_bot.camera_bridge:main',
             'stereo_vision = road_bot.stereo_vision:main',
+            'odometry = road_bot.odometry:main'
         ],
     },
 )
